@@ -1,0 +1,131 @@
+
+INCLUDE "Fr_ether100_new.inc";
+INCLUDE "Rx_DDR_Buff.inc";
+INCLUDE "Tx_Eth100_Sync.inc";
+INCLUDE "Eth_Up_Module.inc";
+
+--INCLUDE "lpm_counter.inc"  ;
+--INCLUDE "lpm_shiftreg.inc" ;
+
+
+
+SUBDESIGN Ethernet_TxRx
+(
+  System_Clock                  : input; -- System Clock, really Bus_Clock
+-- PHY Ethernet I/O
+   -- Rx section    --Preambula, SOF and CRC are cutted out
+  Eth_Phy_RxClk                 : input;
+  Rx_Reset						: input = GND;
+  Carr 							: input;	-- Crs and RxDv; -- по наличию этого сигнала идет работа модуля
+  Rx_Data_nibble_input[3..0]    : input;
+  RxIntStart                    : input;
+  
+	-- Tx section
+  Tx_Reset						: input = GND;	
+  Eth_Phy_TxClk					: input;	--Eth0_Phy_TxClk
+  Eth_Phy_TxEn					: output;	--Eth0_Phy_TxEn
+  Eth_Phy_TxD[3..0]		    	: output;	--Eth0_Phy_TxD[3..0]
+  Eth_Phy_MdC					: output;	--Eth0_Phy_MdC
+  Eth_Phy_MdIO					: input;	--Eth0_Phy_MdIO
+   
+  Eth_RxTx_In_Progress			: output; -- модуль обрабатывает пакет
+  Eth_Tx_End					: output; 
+  Transmit_of_Data_RQ			: output; 
+  
+  -- Standard bus connections
+  DataBus_In[15..0]			    : input;  -- отправляемые с Внутренней Шины в Модуль данные
+  DataBusOut[15..0]     	  	: output; -- выдаваемые на Внутреннюю Шину из Модуля данные (младшие 16бит шины R)
+  
+  DataBusStrobe 			 	: input;  -- строб приема/передачи данных наружу (высокий уровень, защелкиваем по заднему фронту)
+  Select					 	: input;  -- Выбор Модуля для работы с памятью Командного Листа в режиме Slave (с КАМАК-ом)
+  DirectIn					  	: input;  -- направление передачи данных, Если =GND, то данный Модуль читается, если =VCC, то пишется.
+  AddrBus_In[12..0]			 	: input;  -- адрес при операциях доступа чтения/записи Командного Листа с КАМАК-а
+  Parcer_Reset					: input = GND;
+  	-- Master Mode Signals 
+  AccessRequest			    	: output;
+  AccessGranted			    	: input; 
+  DirectOut				    	: output;
+  AddrBusOut[15..0]	    		: output;
+	
+  
+  RxIntStart_out	            : output;
+
+)
+VARIABLE
+   Eth_Data_Layer_Parser_Builder       		: Eth_Up_Module;--Eth_Buffer_Parcer;--Eth_BufferRAM;	
+   Eth_Rx_Signaling_to_Data_Layer_Coverter 	: Fr_ether100_new;	
+   Eth_Tx_Data_to_Signaling_Layer_Coverter 	: Tx_Eth100_Sync;
+ 
+BEGIN
+  
+  
+  --**************************************** Ethernet  ****************************************************	
+ ------------------------------------- Ethernet Reciver ---------------------------------
+    Eth_Rx_Signaling_to_Data_Layer_Coverter.System_Clock 					= 	System_Clock;	
+    Eth_Rx_Signaling_to_Data_Layer_Coverter.RxClk_Edge_at_System_Clock		= 	Eth_Phy_RxClk;--Eth0_RxClk_Edge_at_System_Clock_DDR;
+
+    Eth_Rx_Signaling_to_Data_Layer_Coverter.Reset						    = 	Rx_Reset;--GND;
+    Eth_Rx_Signaling_to_Data_Layer_Coverter.Carr 							=	Carr;--Eth0_Rx_Data_Reg.q[5] AND Eth0_Rx_Data_Reg.q[4];		--Crs and RxDv; -- по наличию этого сигнала идет работа модуля
+    Eth_Rx_Signaling_to_Data_Layer_Coverter.Rx_Data_nibble_input[3..0] 		= 	Rx_Data_nibble_input[3..0];--Eth0_Rx_Data_Reg.q[3..0];  
+  ------------------------------------ Ethernet Trasmitter ------------------------------
+ 	Eth_Tx_Data_to_Signaling_Layer_Coverter.System_Clock					=	System_Clock;
+	Eth_Tx_Data_to_Signaling_Layer_Coverter.Reset							=	Tx_Reset;--GND;
+	Eth_Tx_Data_to_Signaling_Layer_Coverter.Transmit_of_Data_RQ				=	Eth_Data_Layer_Parser_Builder.Transmit_of_Data_RQ;	-- начало передачи
+	Eth_Tx_Data_to_Signaling_Layer_Coverter.Data_to_Transmit[7..0]			=	Eth_Data_Layer_Parser_Builder.Tx_Data[7..0];   		-- данные для передачи
+	
+	-- Phy MII connection
+	Eth_Tx_Data_to_Signaling_Layer_Coverter.MII_Tx_CLK						=	Eth_Phy_TxClk;
+	Eth_Phy_TxEn															=	Eth_Tx_Data_to_Signaling_Layer_Coverter.MII_Tx_En;
+	Eth_Phy_TxD[3..0]														=	Eth_Tx_Data_to_Signaling_Layer_Coverter.MII_Tx_Data[3..0];
+	Eth_Phy_MdC                                								=	GND;
+    
+----------------------------------  Ethernet Data_Layer_Parser ------------------------------- 
+    Eth_Data_Layer_Parser_Builder.Clock 					= System_Clock;
+    Eth_Data_Layer_Parser_Builder.Byte_Strobe_Rx			= DFF(.clk=System_Clock, .d=(Eth_Rx_Signaling_to_Data_Layer_Coverter.Byte_Output_Strobe));
+    Eth_Data_Layer_Parser_Builder.Rx_Data[7..0]				= Eth_Rx_Signaling_to_Data_Layer_Coverter.Byte_Output[7..0];
+    Eth_Data_Layer_Parser_Builder.RxPacket_in_progress		= DFF(.clk=System_Clock, .d=(Eth_Rx_Signaling_to_Data_Layer_Coverter.Data_Frame_is_in_Progress));
+    Eth_Data_Layer_Parser_Builder.RxPacket_End				= DFF(.clk=System_Clock, .d=(Eth_Rx_Signaling_to_Data_Layer_Coverter.Packet_Good_End OR Eth_Rx_Signaling_to_Data_Layer_Coverter.Packet_bad_End));
+    Eth_Data_Layer_Parser_Builder.Packet_Good_End			= DFF(.clk=System_Clock, .d=(Eth_Rx_Signaling_to_Data_Layer_Coverter.Packet_Good_End));
+    Eth_Data_Layer_Parser_Builder.Packet_bad_End			= DFF(.clk=System_Clock, .d=(Eth_Rx_Signaling_to_Data_Layer_Coverter.Packet_bad_End));
+    Eth_Data_Layer_Parser_Builder.Eth_Tx_In_Progress		= DFF(.clk=System_Clock, .d=(Eth_Tx_Data_to_Signaling_Layer_Coverter.Eth_Tx_In_Progress));
+    
+    Eth_Data_Layer_Parser_Builder.Byte_Strobe_Tx      		= Eth_Tx_Data_to_Signaling_Layer_Coverter.Byte_Readed_Strob;  	-- сигнал для смены данных на входе модуля передатчика
+    
+    Eth_Data_Layer_Parser_Builder.(BUS_Clock   , DataBus_In[15..0], DataBusStrobe) =
+								  (System_Clock,   DataBus_In[]   , DataBusStrobe);
+    Eth_Data_Layer_Parser_Builder.Reset			    		= Parcer_Reset;--GND;
+    Eth_Data_Layer_Parser_Builder.DirectIn					= DirectIn;
+    Eth_Data_Layer_Parser_Builder.AddrBus_In[12..0]			= AddrBus_In[12..0];
+    Eth_Data_Layer_Parser_Builder.Select			    	= Select;
+    
+    Eth_Data_Layer_Parser_Builder.AccessGranted	    		= AccessGranted;
+    -- внутренний запуск отправки данных по Ethernet 
+    Eth_Data_Layer_Parser_Builder.RxIntStart           		= RxIntStart;
+
+
+
+
+	Eth_RxTx_In_Progress 									= Eth_Data_Layer_Parser_Builder.Eth_RxTx_In_Progress;
+	DataBusOut[] 											= Eth_Data_Layer_Parser_Builder.DataBusOut[];
+	AccessRequest 											= Eth_Data_Layer_Parser_Builder.AccessRequest;
+	DirectOut 												= Eth_Data_Layer_Parser_Builder.DirectOut;
+	AddrBusOut[15..0] 										= Eth_Data_Layer_Parser_Builder.AddrBusOut[15..0];
+	Eth_Tx_End												= Eth_Data_Layer_Parser_Builder.Eth_Tx_End;
+	Transmit_of_Data_RQ                                     = Eth_Data_Layer_Parser_Builder.Transmit_of_Data_RQ;
+	
+	-- test signals
+	RxIntStart_out = Eth_Data_Layer_Parser_Builder.RxIntStart_out;
+	
+END;
+
+
+
+
+
+
+
+
+
+
+
+
